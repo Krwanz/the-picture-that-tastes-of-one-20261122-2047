@@ -1,94 +1,105 @@
 // the-picture-that-tastes-of-one-20261122-2047
-// Copies entry.png (one picture of food that tastes of one ingredient:
-// a single perfect ripe mango, halved) to MAKEFUN_OUTPUT_DIR and verifies
-// it is a whole valid PNG within the size caps.
-// Node 22, standard library only, no network.
+// Entry program: a single picture of food that tastes of one ingredient —
+// one perfect ripe mango, halved. Copies entry.png into
+// MAKEFUN_OUTPUT_DIR, after checking the PNG is complete and within the
+// size limits. Node 22, standard library only, no network access.
 const fs = require("fs");
 const path = require("path");
 
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const MAX_DIM = 1024;
-const MAX_BYTES = 1048576;
-const IEND_CRC = 0xae426082;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MAX_SIDE = 1024;
+const MAX_FILE_BYTES = 1048576;
+const EXPECTED_IEND_CRC = 0xae426082;
 
-function fail(msg) {
-  console.error("error: " + msg);
+function die(message) {
+  console.error("error: " + message);
   process.exit(1);
 }
 
-const srcPath = path.join(__dirname, "entry.png");
-let src;
+const imagePath = path.join(__dirname, "entry.png");
+let image;
 try {
-  src = fs.readFileSync(srcPath);
-} catch (e) {
-  fail("cannot read entry.png: " + e.message);
+  image = fs.readFileSync(imagePath);
+} catch (err) {
+  die("cannot read entry.png: " + err.message);
 }
 
-if (src.length < 8 || !src.subarray(0, 8).equals(PNG_MAGIC)) {
-  fail("entry.png does not start with the PNG magic bytes");
+if (image.length < 8 || !image.subarray(0, 8).equals(PNG_SIGNATURE)) {
+  die("entry.png does not begin with the PNG signature");
 }
-if (src.length > MAX_BYTES) {
-  fail("entry.png is " + src.length + " bytes, over the 1048576 byte cap");
+if (image.length > MAX_FILE_BYTES) {
+  die("entry.png is " + image.length + " bytes, above the 1048576 byte limit");
 }
 
-// Walk the chunks: first chunk must be IHDR, last chunk must be IEND.
-let offset = 8;
-let width = 0;
-let height = 0;
-let seenIhdr = false;
-let seenIend = false;
-while (offset + 8 <= src.length) {
-  const len = src.readUInt32BE(offset);
-  const type = src.toString("ascii", offset + 4, offset + 8);
-  if (offset + 12 + len > src.length) {
-    fail("truncated chunk " + type);
+// Step through every chunk: IHDR must come first, IEND must close the file.
+let cursor = 8;
+let picWidth = 0;
+let picHeight = 0;
+let foundIhdr = false;
+let foundIend = false;
+while (cursor + 8 <= image.length) {
+  const chunkLen = image.readUInt32BE(cursor);
+  const chunkType = image.toString("ascii", cursor + 4, cursor + 8);
+  if (cursor + 12 + chunkLen > image.length) {
+    die("chunk " + chunkType + " is cut off");
   }
-  if (offset === 8 && type !== "IHDR") {
-    fail("first chunk is " + type + ", expected IHDR");
+  if (cursor === 8 && chunkType !== "IHDR") {
+    die("first chunk is " + chunkType + ", expected IHDR");
   }
-  if (type === "IHDR") {
-    if (len !== 13) fail("IHDR chunk has wrong length " + len);
-    width = src.readUInt32BE(offset + 8);
-    height = src.readUInt32BE(offset + 12);
-    seenIhdr = true;
+  if (chunkType === "IHDR") {
+    if (chunkLen !== 13) die("IHDR length is " + chunkLen + ", expected 13");
+    picWidth = image.readUInt32BE(cursor + 8);
+    picHeight = image.readUInt32BE(cursor + 12);
+    foundIhdr = true;
   }
-  if (type === "IEND") {
-    if (len !== 0) fail("IEND chunk has non-zero length " + len);
-    const crc = src.readUInt32BE(offset + 8);
-    if (crc !== IEND_CRC) fail("IEND CRC mismatch");
-    if (offset + 12 !== src.length) fail("trailing bytes after IEND chunk");
-    seenIend = true;
+  if (chunkType === "IEND") {
+    if (chunkLen !== 0) die("IEND chunk length is " + chunkLen + ", expected 0");
+    if (image.readUInt32BE(cursor + 8) !== EXPECTED_IEND_CRC) {
+      die("IEND CRC does not match");
+    }
+    if (cursor + 12 !== image.length) die("bytes follow the IEND chunk");
+    foundIend = true;
     break;
   }
-  offset += 12 + len;
+  cursor += 12 + chunkLen;
 }
-if (!seenIhdr) fail("no IHDR chunk found");
-if (!seenIend) fail("no complete IEND chunk found");
-if (width > MAX_DIM || height > MAX_DIM) {
-  fail("entry.png is " + width + "x" + height + ", over the 1024x1024 cap");
-}
-if (width === 0 || height === 0) fail("entry.png has zero dimension");
-
-const outDir = process.env.MAKEFUN_OUTPUT_DIR;
-if (!outDir) {
-  fail("MAKEFUN_OUTPUT_DIR is not set");
+if (!foundIhdr) die("no IHDR chunk found");
+if (!foundIend) die("no complete IEND chunk found");
+if (picWidth === 0 || picHeight === 0) die("entry.png has a zero dimension");
+if (picWidth > MAX_SIDE || picHeight > MAX_SIDE) {
+  die("entry.png is " + picWidth + "x" + picHeight + ", above the 1024x1024 limit");
 }
 
-fs.mkdirSync(outDir, { recursive: true });
-// Clear ONLY the contents of the output dir, never the dir itself.
-for (const entry of fs.readdirSync(outDir)) {
-  fs.rmSync(path.join(outDir, entry), { recursive: true, force: true });
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR;
+if (!outputDir) {
+  die("MAKEFUN_OUTPUT_DIR is not set");
 }
 
-const outPath = path.join(outDir, "entry.png");
-fs.writeFileSync(outPath, src);
-
-const written = fs.readFileSync(outPath);
-if (written.length !== src.length) {
-  fail("written size " + written.length + " does not match source " + src.length);
-}
-if (!written.equals(src)) {
-  fail("written bytes do not match source entry.png");
+fs.mkdirSync(outputDir, { recursive: true });
+// Empty the output directory's contents only — never remove the directory.
+for (const name of fs.readdirSync(outputDir)) {
+  fs.rmSync(path.join(outputDir, name), { recursive: true, force: true });
 }
 
-console.log("wrote entry.png (" + width + "x" + height + ", " + src.length + " bytes)");
+const destPath = path.join(outputDir, "entry.png");
+fs.writeFileSync(destPath, image);
+
+const writtenBack = fs.readFileSync(destPath);
+if (writtenBack.length !== image.length) {
+  die("written size " + writtenBack.length + " differs from source " + image.length);
+}
+if (!writtenBack.equals(image)) {
+  die("written bytes differ from source entry.png");
+}
+// Confirm the copy kept the same picture size: parse the written file's
+// IHDR and compare its width and height with the source image's.
+const outWidth = writtenBack.readUInt32BE(16);
+const outHeight = writtenBack.readUInt32BE(20);
+if (outWidth !== picWidth || outHeight !== picHeight) {
+  die(
+    "written entry.png is " + outWidth + "x" + outHeight +
+    ", source is " + picWidth + "x" + picHeight
+  );
+}
+
+console.log("wrote entry.png (" + picWidth + "x" + picHeight + ", " + image.length + " bytes)");
